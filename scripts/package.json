@@ -1,0 +1,13 @@
+{
+  "name": "issue-triage-scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "node setup.mjs",
+    "import": "node import.mjs",
+    "search": "node search.mjs"
+  },
+  "dependencies": {
+    "node-appwrite": "^31.0.0"
+  }
+}
