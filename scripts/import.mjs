@@ -1,12 +1,11 @@
 // Imports recent issues of a GitHub repository, with the pull request that closed each one,
 // and stores them with their embeddings. Usage: node import.mjs [count]
-import { embeddings, env, tablesDB, vectorsDB } from './client.mjs'
+import { embeddings, env, tablesDB, vectors } from './client.mjs'
 import {
   DATABASE_ID,
   ISSUES_TABLE,
   embed,
   issueText,
-  saveVector,
 } from '../functions/triage/src/triage.js'
 
 const COUNT = Number(process.argv[2] ?? 600)
@@ -82,7 +81,7 @@ const issues = await fetchIssues()
 
 for (let i = 0; i < issues.length; i += EMBED_BATCH) {
   const batch = issues.slice(i, i + EMBED_BATCH)
-  const vectors = await embed(
+  const issueVectors = await embed(
     embeddings,
     batch.map((issue) => issueText(issue.title, issue.body)),
   )
@@ -94,7 +93,7 @@ for (let i = 0; i < issues.length; i += EMBED_BATCH) {
       rowId: String(issue.number),
       data: toRow(issue),
     })
-    await saveVector(vectorsDB, issue.number, vectors[index])
+    await vectors.save(issue.number, issueVectors[index])
   }
   console.log(`stored ${Math.min(i + EMBED_BATCH, issues.length)} / ${issues.length}`)
 }

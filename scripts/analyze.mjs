@@ -1,14 +1,11 @@
 // Finds likely duplicates among the imported issues: each issue is compared with the
 // issues reported before it. Usage: node analyze.mjs
 import { Query } from 'node-appwrite'
-import { tablesDB, vectorsDB } from './client.mjs'
+import { tablesDB, vectors } from './client.mjs'
 import {
   DATABASE_ID,
   ISSUES_TABLE,
   MATCH_THRESHOLD,
-  VECTORS_COLLECTION,
-  VECTORS_DATABASE_ID,
-  findSimilar,
   saveMatches,
 } from '../functions/triage/src/triage.js'
 
@@ -19,7 +16,7 @@ do {
     databaseId: DATABASE_ID,
     tableId: ISSUES_TABLE,
     queries: [
-      Query.select(['number']),
+      Query.select(['$id', 'number']),
       Query.orderAsc('number'),
       Query.limit(100),
       ...(cursor ? [Query.cursorAfter(cursor)] : []),
@@ -31,12 +28,8 @@ do {
 
 let found = 0
 for (const [index, number] of numbers.entries()) {
-  const { embeddings: vector } = await vectorsDB.getDocument({
-    databaseId: VECTORS_DATABASE_ID,
-    collectionId: VECTORS_COLLECTION,
-    documentId: String(number),
-  })
-  const matches = await findSimilar(vectorsDB, vector, { exclude: number, before: number, limit: 3 })
+  const vector = await vectors.get(number)
+  const matches = await vectors.findSimilar(vector, { exclude: number, before: number, limit: 3 })
   await saveMatches(tablesDB, number, matches)
   found += matches.filter((match) => match.score >= MATCH_THRESHOLD).length
 

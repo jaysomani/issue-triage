@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            functions/triage/package-lock.json
+            scripts/package-lock.json
+            web/package-lock.json
+
+      - name: Function
+        working-directory: functions/triage
+        run: |
+          npm ci
+          npm test
+          node --check src/main.js
+          node --check src/triage.js
+
+      - name: Scripts
+        working-directory: scripts
+        run: |
+          npm ci
+          for file in *.mjs; do node --check "$file"; done
+
+      - name: Dashboard
+        working-directory: web
+        env:
+          VITE_APPWRITE_ENDPOINT: https://fra.cloud.appwrite.io/v1
+          VITE_APPWRITE_PROJECT_ID: ci
+        run: |
+          npm ci
+          npm run build

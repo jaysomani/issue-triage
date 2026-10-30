@@ -43,16 +43,24 @@ try {
   console.log('created function')
 }
 
-try {
-  await functions.createVariable({
-    functionId: FUNCTION_ID,
-    variableId: 'GITHUB_WEBHOOK_SECRET',
-    key: 'GITHUB_WEBHOOK_SECRET',
-    value: env('GITHUB_WEBHOOK_SECRET'),
-    secret: true,
-  })
-} catch (error) {
-  if (!(error instanceof AppwriteException && error.code === 409)) throw error
+const variables = {
+  GITHUB_WEBHOOK_SECRET: env('GITHUB_WEBHOOK_SECRET'),
+  VECTOR_STORE: process.env.VECTOR_STORE || 'vectorsdb',
+}
+const { variables: existing } = await functions.listVariables({ functionId: FUNCTION_ID })
+for (const [key, value] of Object.entries(variables)) {
+  const current = existing.find((variable) => variable.key === key)
+  if (current) {
+    await functions.updateVariable({ functionId: FUNCTION_ID, variableId: current.$id, key, value, secret: true })
+  } else {
+    await functions.createVariable({
+      functionId: FUNCTION_ID,
+      variableId: key.toLowerCase().replaceAll('_', '-'),
+      key,
+      value,
+      secret: true,
+    })
+  }
 }
 
 // Relative paths, because GNU tar reads a Windows drive letter as a remote host

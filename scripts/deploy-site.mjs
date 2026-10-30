@@ -1,7 +1,18 @@
 // Creates or updates the dashboard site on Appwrite Sites and deploys it. Usage: node deploy-site.mjs
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { Adapter, AppwriteException, BuildRuntime, Client, Framework, Sites } from 'node-appwrite'
+import {
+  Adapter,
+  AppwriteException,
+  BuildRuntime,
+  Client,
+  Framework,
+  ID,
+  Project,
+  Proxy,
+  Query,
+  Sites,
+} from 'node-appwrite'
 import { InputFile } from 'node-appwrite/file'
 import { env } from './client.mjs'
 
@@ -9,12 +20,13 @@ const SITE_ID = 'triage-dashboard'
 const root = fileURLToPath(new URL('..', import.meta.url))
 const archive = fileURLToPath(new URL('../web.tar.gz', import.meta.url))
 
-const sites = new Sites(
-  new Client()
-    .setEndpoint(env('APPWRITE_ENDPOINT'))
-    .setProject(env('APPWRITE_PROJECT_ID'))
-    .setKey(env('APPWRITE_API_KEY')),
-)
+const client = new Client()
+  .setEndpoint(env('APPWRITE_ENDPOINT'))
+  .setProject(env('APPWRITE_PROJECT_ID'))
+  .setKey(env('APPWRITE_API_KEY'))
+const sites = new Sites(client)
+const proxy = new Proxy(client)
+const project = new Project(client)
 
 const settings = {
   siteId: SITE_ID,
@@ -67,13 +79,46 @@ const deployment = await sites.createDeployment({
 })
 console.log(`deployment ${deployment.$id} is ${deployment.status}`)
 
-for (let attempt = 0; attempt < 200; attempt++) {
+let ready = false
+for (let attempt = 0; attempt < 200 && !ready; attempt++) {
   const { status } = await sites.getDeployment({ siteId: SITE_ID, deploymentId: deployment.$id })
-  if (status === 'ready') {
-    console.log('deployment ready')
-    process.exit(0)
-  }
   if (status === 'failed' || status === 'canceled') throw new Error(`deployment ${status}`)
-  await new Promise((resolve) => setTimeout(resolve, 3000))
+  ready = status === 'ready'
+  if (!ready) await new Promise((resolve) => setTimeout(resolve, 3000))
 }
-throw new Error('deployment did not finish in time')
+if (!ready) throw new Error('deployment did not finish in time')
+console.log('deployment ready')
+
+// Sites made through the API only get per-deployment preview domains, which ask visitors to sign in
+if (process.env.SITE_DOMAIN) {
+  try {
+    await proxy.createSiteRule({ domain: process.env.SITE_DOMAIN, siteId: SITE_ID })
+    console.log(`created domain ${process.env.SITE_DOMAIN}`)
+  } catch (error) {
+    if (!(error instanceof AppwriteException && error.code === 409)) throw error
+  }
+}
+
+// The browser may only call the API from registered hostnames, so register the site's domains
+try {
+  const { rules } = await proxy.listRules({
+    queries: [Query.equal('deploymentResourceId', SITE_ID)],
+  })
+  for (const { domain } of rules) {
+    try {
+      await project.createWebPlatform({
+        platformId: ID.unique(),
+        name: `Triage dashboard (${domain})`,
+        hostname: domain,
+      })
+      console.log(`registered web platform ${domain}`)
+    } catch (error) {
+      if (!(error instanceof AppwriteException && error.code === 409)) throw error
+    }
+    console.log(`site: https://${domain}`)
+  }
+} catch (error) {
+  if (!(error instanceof AppwriteException && error.code === 401)) throw error
+  console.log('Add the rules.read and platforms.write scopes to the API key to register the site domain,')
+  console.log('or add it yourself in the Console: Overview → Platforms → Add platform → Web.')
+}

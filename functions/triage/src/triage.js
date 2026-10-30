@@ -5,6 +5,7 @@ export const VECTORS_DATABASE_ID = 'triage-vectors'
 export const ISSUES_TABLE = 'issues'
 export const MATCHES_TABLE = 'matches'
 export const VECTORS_COLLECTION = 'issues'
+export const VECTORS_TABLE = 'vectors'
 export const EMBEDDING_MODEL = 'nomic-embed-text'
 export const EMBEDDING_DIMENSION = 768
 
@@ -12,6 +13,7 @@ export const EMBEDDING_DIMENSION = 768
 // 0.88 they mostly share an area but describe different bugs
 export const MATCH_THRESHOLD = 0.88
 const CANDIDATES = 12
+const VECTOR_PAGE = 200
 const BODY_CHARS = 1500
 
 /**
@@ -69,38 +71,115 @@ export async function embed(embeddings, texts) {
   return vectors
 }
 
-/**
- * The closest stored issues to a vector, best first. VectorsDB orders by similarity but
- * doesn't return a score, so the score is computed from the returned vectors.
- */
-export async function findSimilar(
-  vectorsDB,
-  vector,
-  { exclude = null, before = Infinity, limit = 5 } = {},
-) {
-  const result = await vectorsDB.listDocuments({
-    databaseId: VECTORS_DATABASE_ID,
-    collectionId: VECTORS_COLLECTION,
-    queries: [Query.vectorCosine('embeddings', vector), Query.limit(CANDIDATES)],
-  })
-
-  return result.documents
-    .map((document) => ({
-      number: Number(document.$id),
-      score: cosine(vector, document.embeddings),
-    }))
+const rank = (vector, candidates, { exclude = null, before = Infinity, limit = 5 } = {}) =>
+  candidates
+    .map((candidate) => ({ number: candidate.number, score: cosine(vector, candidate.vector) }))
     .filter((match) => match.number !== exclude && match.number < before)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
+
+/**
+ * Vectors in VectorsDB, which finds the nearest ones itself. It orders by similarity but
+ * doesn't return a score, so the score is computed from the returned vectors.
+ */
+function vectorsDBStore(vectorsDB) {
+  const target = { databaseId: VECTORS_DATABASE_ID, collectionId: VECTORS_COLLECTION }
+  return {
+    async save(number, vector) {
+      await vectorsDB.upsertDocument({
+        ...target,
+        documentId: String(number),
+        data: { embeddings: vector, metadata: { number } },
+      })
+    },
+    async get(number) {
+      const document = await vectorsDB.getDocument({ ...target, documentId: String(number) })
+      return document.embeddings
+    },
+    async remove(number) {
+      await vectorsDB.deleteDocument({ ...target, documentId: String(number) })
+    },
+    async findSimilar(vector, options) {
+      const { documents } = await vectorsDB.listDocuments({
+        ...target,
+        queries: [Query.vectorCosine('embeddings', vector), Query.limit(CANDIDATES)],
+      })
+      return rank(
+        vector,
+        documents.map((document) => ({ number: Number(document.$id), vector: document.embeddings })),
+        options,
+      )
+    },
+  }
 }
 
-export async function saveVector(vectorsDB, number, vector) {
-  await vectorsDB.upsertDocument({
-    databaseId: VECTORS_DATABASE_ID,
-    collectionId: VECTORS_COLLECTION,
-    documentId: String(number),
-    data: { embeddings: vector, metadata: { number } },
-  })
+/**
+ * Vectors in a TablesDB table, compared in code. For where VectorsDB isn't available, such as
+ * Appwrite Cloud's free plan; a repository's issues are few enough to compare them all.
+ * All vectors are loaded once per store, so a batch of searches downloads them only once.
+ * A shared cache keeps them across stores for `cache.ttl` milliseconds, such as between the
+ * executions of a warm function.
+ */
+function tablesDBStore(tablesDB, cache = null) {
+  const target = { databaseId: DATABASE_ID, tableId: VECTORS_TABLE }
+  let loaded = null
+
+  async function all() {
+    if (loaded) return loaded
+    if (cache?.vectors && Date.now() - cache.loadedAt < cache.ttl) {
+      loaded = cache.vectors
+      return loaded
+    }
+    loaded = new Map()
+    let cursor = null
+    do {
+      const { rows } = await tablesDB.listRows({
+        ...target,
+        queries: [
+          Query.select(['$id', 'number', 'embedding']),
+          Query.limit(VECTOR_PAGE),
+          ...(cursor ? [Query.cursorAfter(cursor)] : []),
+        ],
+      })
+      for (const row of rows) loaded.set(row.number, row.embedding)
+      cursor = rows.length === VECTOR_PAGE ? rows.at(-1).$id : null
+    } while (cursor)
+    if (cache) {
+      cache.vectors = loaded
+      cache.loadedAt = Date.now()
+    }
+    return loaded
+  }
+
+  return {
+    async save(number, vector) {
+      await tablesDB.upsertRow({ ...target, rowId: String(number), data: { number, embedding: vector } })
+      loaded?.set(number, vector)
+    },
+    async get(number) {
+      const vectors = await all()
+      if (!vectors.has(number)) throw new Error(`No vector stored for #${number}`)
+      return vectors.get(number)
+    },
+    async remove(number) {
+      await tablesDB.deleteRow({ ...target, rowId: String(number) })
+      loaded?.delete(number)
+    },
+    async findSimilar(vector, options) {
+      const vectors = await all()
+      return rank(
+        vector,
+        [...vectors].map(([number, candidate]) => ({ number, vector: candidate })),
+        options,
+      )
+    },
+  }
+}
+
+export function createVectorStore(kind, { tablesDB, vectorsDB }, { cache = null } = {}) {
+  if (kind === 'tablesdb') return tablesDBStore(tablesDB, cache)
+  if (kind === 'vectorsdb') return vectorsDBStore(vectorsDB)
+  throw new Error(`VECTOR_STORE must be vectorsdb or tablesdb, got "${kind}"`)
 }
 
 /**

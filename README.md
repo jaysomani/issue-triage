@@ -2,6 +2,8 @@
 
 **Finds duplicate GitHub issues by meaning, the moment they're opened.**
 
+**Live demo:** https://issue-triage.appwrite.network (on Appwrite Cloud)
+
 Large open-source repositories get the same bug reported again and again, each time in different words. Maintainers lose hours finding the earlier report, the discussion, or the pull request that already fixed it.
 
 Triage watches a repository. When a new issue is opened, it compares the issue's *meaning*, not its keywords, against every earlier issue, and puts likely duplicates on a live dashboard for a maintainer to confirm or dismiss. It never closes anything on its own.
@@ -31,6 +33,15 @@ GitHub issue opened ──webhook──▶ Appwrite Function "triage"
 | **Realtime** | The dashboard updates the moment a new issue or duplicate is stored |
 | **Functions** | Receives the GitHub webhook (signature verified), checks pasted issues, and records reviews |
 | **Sites** | Hosts the dashboard |
+
+### Where the vectors live
+
+| `VECTOR_STORE` | Used for | How similar issues are found |
+|---|---|---|
+| `vectorsdb` | Self-hosted Appwrite (the demo video) | VectorsDB's `Query.vectorCosine` |
+| `tablesdb` | The live demo on Appwrite Cloud's free plan | Vectors in a TablesDB table, compared in code |
+
+On Appwrite Cloud, VectorsDB runs as a dedicated database, which the free plan doesn't include. A repository's issues are few enough (hundreds to a few thousand) to compare in code, so the live demo stores vectors in TablesDB instead. Everything else is the same code.
 
 ### Choosing what counts as a duplicate
 
@@ -63,8 +74,9 @@ web/                React + Vite dashboard
 
 You need Node.js 22, an Appwrite project (Appwrite Cloud, or self-hosted with VectorsDB and Embeddings enabled), and a GitHub token.
 
-1. **API key:** in the Appwrite Console, create an API key with these scopes: `databases.*`, `tables.*`, `columns.*`, `indexes.*`, `rows.*`, `embeddings.write`, `vectorsdb.*`, `functions.*`, `execution.*`, `sites.*`.
+1. **API key:** in the Appwrite Console, create an API key with these scopes: `databases.*`, `tables.*`, `columns.*`, `indexes.*`, `rows.*`, `embeddings.write`, `vectorsdb.*`, `functions.*`, `execution.*`, `sites.*`, `rules.read`, `rules.write`, `platforms.write`.
 2. **Configure:** copy `.env.example` to `.env` and fill it in. `GITHUB_WEBHOOK_SECRET` is any long random string.
+   Set `VECTOR_STORE` to `vectorsdb` (self-hosted Appwrite, or a Cloud plan with VectorsDB) or to `tablesdb` (Appwrite Cloud's free plan).
 3. **Install and set up:**
    ```bash
    cd scripts && npm install
@@ -80,7 +92,7 @@ You need Node.js 22, an Appwrite project (Appwrite Cloud, or self-hosted with Ve
    node deploy-function.mjs
    node deploy-site.mjs
    ```
-   In the Appwrite Console, add a **Web platform** for the site's domain, so the dashboard may call the API.
+   With `SITE_DOMAIN` set (for example `my-triage.appwrite.network`), the site script creates that public domain and registers it as a web platform, so the dashboard may call the API. Sites created through the API otherwise only get per-deployment preview domains, which ask visitors to sign in.
 5. **Connect GitHub:** in the repository's *Settings → Webhooks*, add a webhook:
    - Payload URL: the triage function's domain (Console → Functions → triage → Domains)
    - Content type: `application/json`

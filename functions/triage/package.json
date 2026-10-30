@@ -5,5 +5,8 @@
   "main": "src/main.js",
   "dependencies": {
     "node-appwrite": "^31.0.0"
+  },
+  "scripts": {
+    "test": "node --test"
   }
 }

@@ -1,6 +1,6 @@
 // Creates the databases, tables and vector collection. Safe to run again.
 import { AppwriteException, Permission, Role, TablesDBIndexType } from 'node-appwrite'
-import { tablesDB, vectorsDB } from './client.mjs'
+import { tablesDB, vectorStore, vectorsDB } from './client.mjs'
 import {
   DATABASE_ID,
   EMBEDDING_DIMENSION,
@@ -8,6 +8,7 @@ import {
   MATCHES_TABLE,
   VECTORS_COLLECTION,
   VECTORS_DATABASE_ID,
+  VECTORS_TABLE,
 } from '../functions/triage/src/triage.js'
 
 // The dashboard is a public demo, so anyone may read; only the function and scripts write
@@ -28,9 +29,19 @@ async function ignoreExisting(label, create) {
 
 const table = { databaseId: DATABASE_ID }
 
-await ignoreExisting('database triage', () =>
-  tablesDB.create({ databaseId: DATABASE_ID, name: 'Triage' }),
-)
+// Appwrite Cloud checks the plan limit before whether a database exists, so look first
+async function createDatabaseIfMissing(label, service, databaseId, name) {
+  try {
+    await service.get({ databaseId })
+    console.log(`exists  ${label}`)
+  } catch (error) {
+    if (!(error instanceof AppwriteException && error.code === 404)) throw error
+    await service.create({ databaseId, name })
+    console.log(`created ${label}`)
+  }
+}
+
+await createDatabaseIfMissing('database triage', tablesDB, DATABASE_ID, 'Triage')
 
 await ignoreExisting('table issues', () =>
   tablesDB.createTable({ ...table, tableId: ISSUES_TABLE, name: 'Issues', permissions: READ_ANY }),
@@ -81,16 +92,27 @@ await ignoreExisting('index matches.status', () =>
   tablesDB.createIndex({ ...match, key: 'status', type: TablesDBIndexType.Key, columns: ['status'] }),
 )
 
-await ignoreExisting('vectors database', () =>
-  vectorsDB.create({ databaseId: VECTORS_DATABASE_ID, name: 'Triage vectors' }),
-)
-await ignoreExisting('vector collection issues', () =>
-  vectorsDB.createCollection({
-    databaseId: VECTORS_DATABASE_ID,
-    collectionId: VECTORS_COLLECTION,
-    name: 'Issue vectors',
-    dimension: EMBEDDING_DIMENSION,
-  }),
-)
+if (vectorStore === 'vectorsdb') {
+  await createDatabaseIfMissing('vectors database', vectorsDB, VECTORS_DATABASE_ID, 'Triage vectors')
+  await ignoreExisting('vector collection issues', () =>
+    vectorsDB.createCollection({
+      databaseId: VECTORS_DATABASE_ID,
+      collectionId: VECTORS_COLLECTION,
+      name: 'Issue vectors',
+      dimension: EMBEDDING_DIMENSION,
+    }),
+  )
+} else {
+  // Only the function and scripts read vectors, so the table has no permissions
+  await ignoreExisting('table vectors', () =>
+    tablesDB.createTable({ ...table, tableId: VECTORS_TABLE, name: 'Vectors' }),
+  )
+  const vector = { ...table, tableId: VECTORS_TABLE }
+  await ignoreExisting('vectors.number', () => tablesDB.createIntegerColumn({ ...vector, key: 'number', required: true }))
+  await ignoreExisting('vectors.embedding', () =>
+    tablesDB.createFloatColumn({ ...vector, key: 'embedding', required: false, array: true }),
+  )
+  await waitForColumns(VECTORS_TABLE)
+}
 
-console.log('setup done')
+console.log(`setup done (vectors in ${vectorStore})`)

@@ -4,12 +4,14 @@ import {
   DATABASE_ID,
   ISSUES_TABLE,
   MATCHES_TABLE,
+  createVectorStore,
   embed,
-  findSimilar,
   issueText,
   saveMatches,
-  saveVector,
 } from './triage.js'
+
+// Reloading every vector on each execution is the slow part, so a warm function keeps them a minute
+const vectorCache = { ttl: 60_000, vectors: null, loadedAt: 0 }
 
 const ISSUE_ACTIONS = new Set(['opened', 'edited', 'reopened', 'closed'])
 const REVIEW_STATUSES = new Set(['confirmed', 'rejected', 'suggested'])
@@ -19,10 +21,17 @@ function services(req) {
     .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT)
     .setProject(process.env.APPWRITE_FUNCTION_PROJECT_ID)
     .setKey(req.headers['x-appwrite-key'])
+
+  const tablesDB = new TablesDB(client)
+  const vectorsDB = new VectorsDB(client)
   return {
-    tablesDB: new TablesDB(client),
-    vectorsDB: new VectorsDB(client),
+    tablesDB,
     embeddings: new Embeddings(client),
+    vectors: createVectorStore(
+      process.env.VECTOR_STORE || 'vectorsdb',
+      { tablesDB, vectorsDB },
+      { cache: vectorCache },
+    ),
   }
 }
 
@@ -58,7 +67,7 @@ async function handleWebhook(req, res, log) {
     return res.json({ ignored: true })
   }
 
-  const { tablesDB, vectorsDB, embeddings } = services(req)
+  const { tablesDB, vectors, embeddings } = services(req)
   const row = {
     number: issue.number,
     title: issue.title.slice(0, 512),
@@ -77,10 +86,10 @@ async function handleWebhook(req, res, log) {
   }
 
   const [vector] = await embed(embeddings, [issueText(issue.title, issue.body)])
-  const matches = await findSimilar(vectorsDB, vector, { exclude: issue.number, limit: 3 })
+  const matches = await vectors.findSimilar(vector, { exclude: issue.number, limit: 3 })
 
   await tablesDB.upsertRow({ databaseId: DATABASE_ID, tableId: ISSUES_TABLE, rowId: String(issue.number), data: row })
-  await saveVector(vectorsDB, issue.number, vector)
+  await vectors.save(issue.number, vector)
   await saveMatches(tablesDB, issue.number, matches)
 
   log(`#${issue.number} ${action}: best match ${matches[0] ? `#${matches[0].number} ${matches[0].score.toFixed(2)}` : 'none'}`)
@@ -93,9 +102,9 @@ async function handleCheck(req, res) {
     return res.json({ error: 'A title is required' }, 400)
   }
 
-  const { tablesDB, vectorsDB, embeddings } = services(req)
+  const { tablesDB, vectors, embeddings } = services(req)
   const [vector] = await embed(embeddings, [issueText(title.slice(0, 512), body.slice(0, 10000))])
-  const matches = await findSimilar(vectorsDB, vector, { limit: 5 })
+  const matches = await vectors.findSimilar(vector, { limit: 5 })
   return res.json({ matches: await withIssues(tablesDB, matches) })
 }
 
